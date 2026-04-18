@@ -8,7 +8,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.routewise.app"
+      "bundleIdentifier": "com.cloudhacks.routewise"
     },
     "plugins": [
       [
@@ -19,7 +19,7 @@
       ]
     ],
     "android": {
-      "package": "com.routewise.app"
+      "package": "com.cloudhacks.routewise"
     },
     "splash": {
       "resizeMode": "contain",
