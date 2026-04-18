@@ -7,19 +7,17 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
 import { RootStackParamList } from '../../App';
+import { usePushToken } from '../../App';
 import { subscribe } from '../api/subscribe';
 import ExplanationCard from '../components/ExplanationCard';
 import FlightCard from '../components/FlightCard';
 import RiskBadge from '../components/RiskBadge';
 
 type Props = StackScreenProps<RootStackParamList, 'Result'>;
-
-const E164 = /^\+[1-9]\d{1,14}$/;
 
 function extractTime(iso: string | null): string {
   if (!iso) return '00:00';
@@ -29,19 +27,22 @@ function extractTime(iso: string | null): string {
 
 export default function ResultScreen({ route }: Props) {
   const { prediction, flightDate } = route.params;
-  const [phone, setPhone] = useState('+1');
+  const pushToken = usePushToken();
   const [loading, setLoading] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
 
   async function onSubscribe() {
-    if (!E164.test(phone)) {
-      Alert.alert('Invalid phone', 'Use E.164 format, e.g. +13105551234');
+    if (!pushToken) {
+      Alert.alert(
+        'Notifications not enabled',
+        'Please allow notifications in your device settings to get delay alerts.'
+      );
       return;
     }
     try {
       setLoading(true);
       await subscribe({
-        phone,
+        push_token: pushToken,
         flight_iata: prediction.flight_iata,
         flight_date: flightDate,
         origin: prediction.origin,
@@ -83,31 +84,26 @@ export default function ResultScreen({ route }: Props) {
         <View style={styles.confirmed}>
           <Text style={styles.confirmedTitle}>You're subscribed ✅</Text>
           <Text style={styles.confirmedBody}>
-            We'll text {phone} every time the delay status changes until the plane lands.
+            We'll push-notify you every time this flight's delay status changes until it lands.
           </Text>
         </View>
       ) : (
         <View style={styles.subscribeCard}>
           <Text style={styles.subscribeTitle}>Get live delay alerts</Text>
           <Text style={styles.subscribeBody}>
-            We'll SMS you every time this flight's status changes, all the way through landing.
+            We'll push-notify you every time this flight's status changes, all the way through landing.
           </Text>
-          <TextInput
-            value={phone}
-            onChangeText={setPhone}
-            placeholder="+13105551234"
-            keyboardType="phone-pad"
-            style={styles.input}
-          />
           <Pressable
-            style={[styles.button, loading && styles.buttonDisabled]}
+            style={[styles.button, (loading || !pushToken) && styles.buttonDisabled]}
             onPress={onSubscribe}
-            disabled={loading}
+            disabled={loading || !pushToken}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.buttonText}>Subscribe</Text>
+              <Text style={styles.buttonText}>
+                {pushToken ? 'Subscribe for alerts' : 'Enable notifications to subscribe'}
+              </Text>
             )}
           </Pressable>
         </View>
@@ -132,17 +128,6 @@ const styles = StyleSheet.create({
   },
   subscribeTitle: { fontSize: 18, fontWeight: '700', color: '#0f172a' },
   subscribeBody: { fontSize: 14, color: '#475569', marginTop: 6, marginBottom: 14 },
-  input: {
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#0f172a',
-    marginBottom: 12,
-  },
   button: {
     backgroundColor: '#0f172a',
     borderRadius: 12,

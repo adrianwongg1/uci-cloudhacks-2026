@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(git checkout *)",
-      "Bash(git ls-tree *)"
+      "Bash(git ls-tree *)",
+      "Bash(aws bedrock-runtime:*)",
+      "Read(//tmp/**)",
+      "Bash(/usr/local/bin/aws --version)",
+      "Bash(/opt/homebrew/bin/aws --version)",
+      "Bash(python3 -c ':*)",
+      "Bash(pip3 install:*)"
     ]
   }
 }

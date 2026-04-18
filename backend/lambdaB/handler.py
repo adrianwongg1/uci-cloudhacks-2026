@@ -1,6 +1,6 @@
 import json
 import os
-import re
+import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9,10 +9,7 @@ import boto3
 DYNAMODB_TABLE = os.environ["DYNAMODB_TABLE"]
 
 dynamodb = boto3.resource("dynamodb")
-sns = boto3.client("sns")
 table = dynamodb.Table(DYNAMODB_TABLE)
-
-E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 
 CORS_HEADERS = {
     "Content-Type": "application/json",
@@ -22,7 +19,7 @@ CORS_HEADERS = {
 }
 
 REQUIRED = (
-    "phone",
+    "push_token",
     "flight_iata",
     "flight_date",
     "origin",
@@ -30,6 +27,8 @@ REQUIRED = (
     "scheduled_departure",
     "predicted_risk",
 )
+
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 
 def reply(status, body):
@@ -44,14 +43,20 @@ def risk_label(p):
     return "HIGH"
 
 
-def confirmation_sms(sub):
-    pct = round(float(sub["predicted_risk"]) * 100)
-    return (
-        f"RouteWise: Watching {sub['flight_iata']} on {sub['flight_date']}. "
-        f"{sub['origin']}->{sub['destination']} {sub['scheduled_departure']}. "
-        f"Predicted delay risk: {pct}% {risk_label(float(sub['predicted_risk']))}. "
-        f"You'll be alerted if this flight is delayed."
+def send_push(push_token, title, body):
+    payload = json.dumps({
+        "to": push_token,
+        "title": title,
+        "body": body,
+        "sound": "default",
+    }).encode()
+    req = urllib.request.Request(
+        EXPO_PUSH_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
 
 
 def handler(event, _context):
@@ -68,14 +73,12 @@ def handler(event, _context):
     if missing:
         return reply(400, {"error": f"missing fields: {missing}"})
 
-    if not E164.match(body["phone"]):
-        return reply(400, {"error": "phone must be E.164 (e.g. +13105551234)"})
-
+    push_token = body["push_token"]
     risk = float(body["predicted_risk"])
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     item = {
-        "phone": body["phone"],
+        "phone": push_token,          # reuse partition key field
         "flight_iata": body["flight_iata"],
         "flight_date": body["flight_date"],
         "origin": body["origin"],
@@ -93,9 +96,24 @@ def handler(event, _context):
     except Exception as e:
         return reply(500, {"error": f"dynamodb error: {e}"})
 
+    pct = round(risk * 100)
+    label = risk_label(risk)
+    flight = body["flight_iata"]
+    origin, dest = body["origin"], body["destination"]
+    sched = body["scheduled_departure"]
+
     try:
-        sns.publish(PhoneNumber=body["phone"], Message=confirmation_sms(body))
+        send_push(
+            push_token,
+            title=f"Watching {flight} ✈️",
+            body=(
+                f"{origin} → {dest} on {body['flight_date']} at {sched}. "
+                f"Current delay risk: {pct}% ({label}). "
+                f"You'll be notified of any status changes."
+            ),
+        )
     except Exception as e:
-        return reply(500, {"error": f"sns error: {e}"})
+        # Don't fail the subscribe if the confirmation push fails
+        print(f"push confirmation failed: {e}")
 
     return reply(200, {"subscribed": True})

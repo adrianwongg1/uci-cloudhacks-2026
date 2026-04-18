@@ -127,6 +127,7 @@ def handler(event, _context):
     destination = body.get("destination")
     departure_time = body.get("departure_time")
 
+    flight = None
     try:
         if flight_iata:
             flights = aviationstack({"flight_iata": flight_iata, "flight_date": flight_date})
@@ -138,13 +139,33 @@ def handler(event, _context):
             flight = pick_by_departure(flights, departure_time)
         else:
             return reply(400, {"error": "provide flight_iata or origin+destination+departure_time"})
-    except Exception as e:
-        return reply(502, {"error": f"aviationstack error: {e}"})
+    except Exception:
+        pass  # Fall back to request-provided data
 
-    if not flight:
-        return reply(404, {"error": "no flight found"})
-
-    feat = features_from_flight(flight)
+    # Build features from live data if available, otherwise use request fields
+    if flight:
+        feat = features_from_flight(flight)
+    else:
+        try:
+            dt = datetime.fromisoformat(flight_date)
+        except ValueError:
+            dt = datetime.now(timezone.utc)
+        # Parse departure_time like "14:30" if provided
+        if departure_time:
+            try:
+                h, m = departure_time.split(":")
+                dt = dt.replace(hour=int(h), minute=int(m))
+            except Exception:
+                pass
+        feat = {
+            "airline": "Unknown",
+            "origin": origin or (flight_iata[:3] if flight_iata else "???"),
+            "destination": destination or "???",
+            "dep_hour": dt.hour,
+            "day_of_week": dt.strftime("%A"),
+            "month": dt.strftime("%B"),
+            "distance": "unknown",
+        }
 
     try:
         pred = call_bedrock(feat)
@@ -152,16 +173,16 @@ def handler(event, _context):
         return reply(502, {"error": f"bedrock error: {e}"})
 
     prob = float(pred.get("delay_probability", 0))
-    dep = flight.get("departure") or {}
+    dep = (flight.get("departure") or {}) if flight else {}
 
     return reply(200, {
-        "flight_iata": (flight.get("flight") or {}).get("iata") or flight_iata,
+        "flight_iata": ((flight.get("flight") or {}).get("iata") if flight else None) or flight_iata,
         "flight_date": flight_date,
         "airline": feat["airline"],
         "origin": feat["origin"],
         "destination": feat["destination"],
         "scheduled_departure": dep.get("scheduled"),
-        "current_status": flight.get("flight_status"),
+        "current_status": flight.get("flight_status") if flight else None,
         "current_delay_minutes": dep.get("delay"),
         "predicted_probability": prob,
         "risk_level": pred.get("risk_level") or risk_level(prob),

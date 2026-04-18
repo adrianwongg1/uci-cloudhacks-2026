@@ -29,7 +29,7 @@ export interface PredictResponse {
 }
 
 export interface SubscribeRequest {
-  phone: string;
+  push_token: string;
   flight_iata: string;
   flight_date: string;
   origin: string;

@@ -10,12 +10,25 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.routewise.app"
     },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "aps-environment": "development"
+        }
+      ]
+    ],
     "android": {
       "package": "com.routewise.app"
     },
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "477bd70b-0fef-49f6-b3c7-4b2c65183e90"
+      }
     }
   }
 }

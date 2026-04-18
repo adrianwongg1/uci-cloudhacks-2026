@@ -16,8 +16,9 @@ DYNAMODB_TABLE = os.environ["DYNAMODB_TABLE"]
 
 bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
 dynamodb = boto3.resource("dynamodb")
-sns = boto3.client("sns")
 table = dynamodb.Table(DYNAMODB_TABLE)
+
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 SYSTEM_PROMPT = (
     "You are a flight delay prediction system. You have deep knowledge of US "
@@ -58,14 +59,26 @@ def parse_iso(s):
         return None
 
 
-def send_sms(phone, msg):
-    sns.publish(PhoneNumber=phone, Message=msg)
+def send_push(push_token, title, body):
+    payload = json.dumps({
+        "to": push_token,
+        "title": title,
+        "body": body,
+        "sound": "default",
+    }).encode()
+    req = urllib.request.Request(
+        EXPO_PUSH_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
 
 
-def update_sub(phone, flight_iata, fields):
+def update_sub(push_token, flight_iata, fields):
     expr = "SET " + ", ".join(f"#{k} = :{k}" for k in fields)
     table.update_item(
-        Key={"phone": phone, "flight_iata": flight_iata},
+        Key={"phone": push_token, "flight_iata": flight_iata},
         UpdateExpression=expr,
         ExpressionAttributeNames={f"#{k}": k for k in fields},
         ExpressionAttributeValues={f":{k}": v for k, v in fields.items()},
@@ -107,15 +120,18 @@ def aviationstack_status(flight_iata, flight_date):
     with urllib.request.urlopen(
         f"http://api.aviationstack.com/v1/flights?{qs}", timeout=15
     ) as r:
-        flights = (json.loads(r.read()).get("data") or [])
+        flights = json.loads(r.read()).get("data") or []
     return flights[0] if flights else None
 
 
 def handle_preflight(sub, days_until):
+    push_token = sub["phone"]
+    flight = sub["flight_iata"]
+
     try:
         pred = call_bedrock(sub)
     except Exception as e:
-        print(f"bedrock error {sub['phone']}/{sub['flight_iata']}: {e}")
+        print(f"bedrock error {flight}: {e}")
         return
 
     new_prob = float(pred.get("delay_probability", 0))
@@ -124,22 +140,25 @@ def handle_preflight(sub, days_until):
         return
 
     pct = round(new_prob * 100)
-    flight, origin, dest = sub["flight_iata"], sub["origin"], sub["destination"]
+    origin, dest = sub["origin"], sub["destination"]
     sched = sub["scheduled_departure"]
     label = risk_label(new_prob)
 
-    if days_until >= 7:
-        msg = (
-            f"RouteWise: {days_until} days until {flight} ({sub['flight_date']}). "
-            f"{origin}->{dest} {sched}. Current risk: {pct}% {label}. We'll keep watching."
+    try:
+        send_push(
+            push_token,
+            title=f"{flight} delay risk update",
+            body=(
+                f"{origin}→{dest} on {sub['flight_date']} at {sched}. "
+                f"Risk now {pct}% {label}."
+                + (f" {days_until} days to go." if days_until > 1 else "")
+            ),
         )
-    else:
-        msg = (
-            f"RouteWise: {days_until} days until {flight}. {origin}->{dest} {sched}. "
-            f"Delay risk updated: {pct}% {label}."
-        )
-    send_sms(sub["phone"], msg)
-    update_sub(sub["phone"], flight, {"last_predicted_risk": Decimal(str(new_prob))})
+    except Exception as e:
+        print(f"push failed: {e}")
+        return
+
+    update_sub(push_token, flight, {"last_predicted_risk": Decimal(str(new_prob))})
 
 
 def extract_dep_time(flight, fallback):
@@ -149,10 +168,13 @@ def extract_dep_time(flight, fallback):
 
 
 def handle_day_of(sub):
+    push_token = sub["phone"]
+    flight_id = sub["flight_iata"]
+
     try:
-        flight = aviationstack_status(sub["flight_iata"], sub["flight_date"])
+        flight = aviationstack_status(flight_id, sub["flight_date"])
     except Exception as e:
-        print(f"aviationstack error {sub['flight_iata']}: {e}")
+        print(f"aviationstack error {flight_id}: {e}")
         return
     if not flight:
         return
@@ -163,16 +185,20 @@ def handle_day_of(sub):
     delay = int(delay_raw) if isinstance(delay_raw, (int, float)) else 0
     new_time = extract_dep_time(flight, sub["scheduled_departure"])
 
-    flight_id, dest, origin = sub["flight_iata"], sub["destination"], sub["origin"]
+    dest, origin = sub["destination"], sub["origin"]
     last = sub.get("last_delay_minutes")
     last_delay = int(last) if last is not None else None
 
     if status in ("landed", "arrived"):
-        send_sms(sub["phone"], (
-            f"RouteWise: {flight_id} has landed at {dest}. "
-            f"Final delay: +{delay} min. Safe travels! ✈️"
-        ))
-        update_sub(sub["phone"], flight_id, {
+        try:
+            send_push(
+                push_token,
+                title=f"{flight_id} has landed ✈️",
+                body=f"Arrived at {dest}. Final delay: +{delay} min. Safe travels!",
+            )
+        except Exception as e:
+            print(f"push failed: {e}")
+        update_sub(push_token, flight_id, {
             "status": "completed",
             "last_delay_minutes": delay,
         })
@@ -183,25 +209,25 @@ def handle_day_of(sub):
 
     prev = last_delay or 0
     if prev == 0 and delay > 0:
-        msg = (
-            f"RouteWise: {flight_id} is now delayed. New departure: {new_time} "
-            f"(+{delay} min). {origin}->{dest}."
-        )
+        title = f"{flight_id} is delayed"
+        body = f"New departure: {new_time} (+{delay} min). {origin}→{dest}."
     elif delay == 0 and prev > 0:
-        msg = f"RouteWise: {flight_id} delay cleared. Back on schedule - departs {new_time}."
+        title = f"{flight_id} delay cleared ✅"
+        body = f"Back on schedule — departs {new_time}."
     elif delay > prev:
-        msg = (
-            f"RouteWise: {flight_id} delay updated - now +{delay} min. "
-            f"New departure: {new_time}."
-        )
+        title = f"{flight_id} delay increased"
+        body = f"Now +{delay} min. New departure: {new_time}."
     else:
-        msg = (
-            f"RouteWise: {flight_id} delay reduced - now +{delay} min. "
-            f"New departure: {new_time}."
-        )
+        title = f"{flight_id} delay reduced"
+        body = f"Now +{delay} min. New departure: {new_time}."
 
-    send_sms(sub["phone"], msg)
-    update_sub(sub["phone"], flight_id, {"last_delay_minutes": delay})
+    try:
+        send_push(push_token, title=title, body=body)
+    except Exception as e:
+        print(f"push failed: {e}")
+        return
+
+    update_sub(push_token, flight_id, {"last_delay_minutes": delay})
 
 
 def should_run(days_until, hour, minute):
@@ -222,10 +248,12 @@ def process(sub, now):
     except ValueError:
         return
 
+    push_token = sub["phone"]
+    flight_iata = sub["flight_iata"]
     days_until = (fd - now.date()).days
 
     if days_until < 0:
-        update_sub(sub["phone"], sub["flight_iata"], {"status": "completed"})
+        update_sub(push_token, flight_iata, {"status": "completed"})
         return
 
     if not should_run(days_until, now.hour, now.minute):
