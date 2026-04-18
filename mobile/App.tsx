@@ -9,7 +9,7 @@ import { PredictResponse } from './src/types';
 
 export type RootStackParamList = {
   Search: undefined;
-  Result: { prediction: PredictResponse };
+  Result: { prediction: PredictResponse; flightDate: string };
 };
 
 const Stack = createStackNavigator<RootStackParamList>();

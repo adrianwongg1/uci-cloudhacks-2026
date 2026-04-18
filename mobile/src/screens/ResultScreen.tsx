@@ -21,8 +21,14 @@ type Props = StackScreenProps<RootStackParamList, 'Result'>;
 
 const E164 = /^\+[1-9]\d{1,14}$/;
 
+function extractTime(iso: string | null): string {
+  if (!iso) return '00:00';
+  const m = /T(\d{2}:\d{2})/.exec(iso);
+  return m ? m[1] : '00:00';
+}
+
 export default function ResultScreen({ route }: Props) {
-  const { prediction } = route.params;
+  const { prediction, flightDate } = route.params;
   const [phone, setPhone] = useState('+1');
   const [loading, setLoading] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
@@ -32,10 +38,6 @@ export default function ResultScreen({ route }: Props) {
       Alert.alert('Invalid phone', 'Use E.164 format, e.g. +13105551234');
       return;
     }
-    const flightDate =
-      prediction.scheduled_departure?.slice(0, 10) ?? new Date().toISOString().slice(0, 10);
-    const scheduledTime =
-      prediction.scheduled_departure?.slice(11, 16) ?? '00:00';
     try {
       setLoading(true);
       await subscribe({
@@ -44,7 +46,7 @@ export default function ResultScreen({ route }: Props) {
         flight_date: flightDate,
         origin: prediction.origin,
         destination: prediction.destination,
-        scheduled_departure: scheduledTime,
+        scheduled_departure: extractTime(prediction.scheduled_departure),
         predicted_risk: prediction.predicted_probability,
       });
       setSubscribed(true);
@@ -72,13 +74,9 @@ export default function ResultScreen({ route }: Props) {
       />
 
       <View style={styles.spacer} />
-
       <RiskBadge level={prediction.risk_level} probability={prediction.predicted_probability} />
-
       <View style={styles.spacer} />
-
       <ExplanationCard explanation={prediction.explanation} />
-
       <View style={styles.spacer} />
 
       {subscribed ? (
@@ -153,11 +151,7 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { backgroundColor: '#94a3b8' },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  confirmed: {
-    backgroundColor: '#dcfce7',
-    borderRadius: 16,
-    padding: 20,
-  },
+  confirmed: { backgroundColor: '#dcfce7', borderRadius: 16, padding: 20 },
   confirmedTitle: { fontSize: 18, fontWeight: '800', color: '#166534' },
   confirmedBody: { fontSize: 14, color: '#166534', marginTop: 8, lineHeight: 20 },
 });

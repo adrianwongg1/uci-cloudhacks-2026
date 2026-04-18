@@ -16,6 +16,7 @@ export type PredictRequest = PredictByFlightRequest | PredictByRouteRequest;
 
 export interface PredictResponse {
   flight_iata: string;
+  flight_date: string;
   airline: string;
   origin: string;
   destination: string;

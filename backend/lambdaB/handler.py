@@ -14,18 +14,26 @@ table = dynamodb.Table(DYNAMODB_TABLE)
 
 E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 
+CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+}
 
-def response(status, body):
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Allow-Methods": "POST,OPTIONS",
-        },
-        "body": json.dumps(body),
-    }
+REQUIRED = (
+    "phone",
+    "flight_iata",
+    "flight_date",
+    "origin",
+    "destination",
+    "scheduled_departure",
+    "predicted_risk",
+)
+
+
+def reply(status, body):
+    return {"statusCode": status, "headers": CORS_HEADERS, "body": json.dumps(body)}
 
 
 def risk_label(p):
@@ -36,71 +44,58 @@ def risk_label(p):
     return "HIGH"
 
 
-def confirmation_message(flight, date, origin, dest, time, risk):
-    pct = int(round(risk * 100))
+def confirmation_sms(sub):
+    pct = round(float(sub["predicted_risk"]) * 100)
     return (
-        f"RouteWise: Watching {flight} on {date}. {origin}->{dest} {time}. "
-        f"Predicted delay risk: {pct}% {risk_label(risk)}. "
+        f"RouteWise: Watching {sub['flight_iata']} on {sub['flight_date']}. "
+        f"{sub['origin']}->{sub['destination']} {sub['scheduled_departure']}. "
+        f"Predicted delay risk: {pct}% {risk_label(float(sub['predicted_risk']))}. "
         f"You'll be alerted if this flight is delayed."
     )
 
 
 def handler(event, _context):
+    if (event.get("requestContext", {}).get("http", {}).get("method")
+            or event.get("httpMethod")) == "OPTIONS":
+        return reply(204, {})
+
     try:
         body = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
-        return response(400, {"error": "invalid JSON body"})
+        return reply(400, {"error": "invalid JSON body"})
 
-    required = [
-        "phone",
-        "flight_iata",
-        "flight_date",
-        "origin",
-        "destination",
-        "scheduled_departure",
-        "predicted_risk",
-    ]
-    missing = [k for k in required if body.get(k) is None]
+    missing = [k for k in REQUIRED if body.get(k) is None]
     if missing:
-        return response(400, {"error": f"missing fields: {missing}"})
+        return reply(400, {"error": f"missing fields: {missing}"})
 
-    phone = body["phone"]
-    if not E164.match(phone):
-        return response(400, {"error": "phone must be E.164, e.g. +13105551234"})
+    if not E164.match(body["phone"]):
+        return reply(400, {"error": "phone must be E.164 (e.g. +13105551234)"})
 
-    predicted_risk = float(body["predicted_risk"])
+    risk = float(body["predicted_risk"])
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     item = {
-        "phone": phone,
+        "phone": body["phone"],
         "flight_iata": body["flight_iata"],
         "flight_date": body["flight_date"],
         "origin": body["origin"],
         "destination": body["destination"],
         "scheduled_departure": body["scheduled_departure"],
-        "predicted_risk": Decimal(str(predicted_risk)),
-        "last_predicted_risk": Decimal(str(predicted_risk)),
+        "predicted_risk": Decimal(str(risk)),
+        "last_predicted_risk": Decimal(str(risk)),
         "last_delay_minutes": None,
         "status": "active",
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "created_at": now,
     }
 
     try:
         table.put_item(Item=item)
     except Exception as e:
-        return response(500, {"error": f"dynamodb error: {e}"})
-
-    message = confirmation_message(
-        body["flight_iata"],
-        body["flight_date"],
-        body["origin"],
-        body["destination"],
-        body["scheduled_departure"],
-        predicted_risk,
-    )
+        return reply(500, {"error": f"dynamodb error: {e}"})
 
     try:
-        sns.publish(PhoneNumber=phone, Message=message)
+        sns.publish(PhoneNumber=body["phone"], Message=confirmation_sms(body))
     except Exception as e:
-        return response(500, {"error": f"sns error: {e}"})
+        return reply(500, {"error": f"sns error: {e}"})
 
-    return response(200, {"subscribed": True})
+    return reply(200, {"subscribed": True})
