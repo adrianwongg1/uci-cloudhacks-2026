@@ -3,6 +3,7 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -87,6 +88,13 @@ export default function ResultScreen({ route }: Props) {
             We'll push-notify you every time this flight's delay status changes until it lands.
           </Text>
         </View>
+      ) : Platform.OS === 'web' ? (
+        <View style={styles.webCard}>
+          <Text style={styles.subscribeTitle}>Get live delay alerts</Text>
+          <Text style={styles.subscribeBody}>
+            Download the RouteWise app on your iPhone to get push notifications for this flight.
+          </Text>
+        </View>
       ) : (
         <View style={styles.subscribeCard}>
           <Text style={styles.subscribeTitle}>Get live delay alerts</Text>
@@ -139,4 +147,11 @@ const styles = StyleSheet.create({
   confirmed: { backgroundColor: '#dcfce7', borderRadius: 16, padding: 20 },
   confirmedTitle: { fontSize: 18, fontWeight: '800', color: '#166534' },
   confirmedBody: { fontSize: 14, color: '#166534', marginTop: 8, lineHeight: 20 },
+  webCard: {
+    backgroundColor: '#eff6ff',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
 });

@@ -1,136 +1,150 @@
 # RouteWise Implementation Plan
 
-> Companion to [SPEC.md](SPEC.md). Read the spec alongside this plan — this plan only covers build order and the decisions the spec left open.
+> Companion to [SPEC.md](SPEC.md). Read the spec alongside this plan.
 
-## Context
+## Current Status (as of UCI CloudHacks 2026)
 
-RouteWise is a hackathon flight-delay predictor for UCI CloudHacks 2026. The spec is detailed and self-contained: file layout, API contracts, DynamoDB schema, SMS templates, Bedrock prompt, polling logic, and env vars are all pinned down. The repo is already initialized and the full folder tree from the spec is scaffolded with empty files, committed, and pushed to `github.com/adrianwongg1/uci-cloudhacks-2026`.
+**Everything below has already been completed.** The AWS infrastructure is live, all three Lambdas are deployed, and the mobile + web app are fully built. A developer picking this up only needs to handle the items marked **TODO**.
 
-Goal: give a single developer (on a different laptop later in the day) an unambiguous execution order to fill in the empty files, stand up the AWS stack the fastest way possible, and reach a demoable state on iPhone via Expo Go.
+---
 
-### Decisions locked in
+## What's Already Done
 
-- **AWS deploy style:** fastest/easiest — **manual AWS Console clicks + `aws` CLI zip uploads** for Lambdas. No SAM, no CDK.
-- **Bedrock model:** **Claude Opus 4.7** (`claude-opus-4-7`). Supersedes `claude-sonnet-4-20250514` in the spec. Use the exact Bedrock inference-profile ID returned by `aws bedrock list-inference-profiles --region us-east-1` at deploy time (likely `us.anthropic.claude-opus-4-7-YYYYMMDD-v1:0`). Update `BEDROCK_MODEL_ID` env var on Lambdas A and C.
+### AWS Infrastructure (live in us-east-1, account 701783520524)
+- **DynamoDB** table `RouteWiseSubscriptions` — partition key `phone` (String), sort key `flight_iata` (String), on-demand billing
+- **IAM role** `RouteWiseLambdaRole` — policies: `AWSLambdaBasicExecutionRole`, `AmazonDynamoDBFullAccess`, `AmazonSNSFullAccess`, `AmazonBedrockFullAccess`
+- **Lambda A** `RouteWise-Predict` — deployed, handler `handler.handler`, Python 3.11, 512 MB, 30s timeout
+- **Lambda B** `RouteWise-Subscribe` — deployed, same config
+- **Lambda C** `RouteWise-Monitor` — deployed, same config
+- **API Gateway** HTTP API `RouteWiseAPI` — invoke URL: `https://0wzwzcppz8.execute-api.us-east-1.amazonaws.com`
+  - `POST /predict` → `RouteWise-Predict`
+  - `POST /subscribe` → `RouteWise-Subscribe`
+  - CORS: `*`
+- **EventBridge** rule `RouteWise-Monitor-Schedule` — fires every 15 minutes → `RouteWise-Monitor`
 
-## Prerequisites (do these first on the new laptop)
+### Mobile App (Expo React Native + Web)
+- Full stack navigation: Search → Result screens
+- Push notifications via Expo Push API (APNs token-based, key ID `ZD245WLS9Y`, team `7H5489C69N`)
+- Web export works (`npx expo export --platform web` → `dist/`)
+- EAS project linked: `477bd70b-0fef-49f6-b3c7-4b2c65183e90` (account: `goatedraider77`)
+- Bundle ID: `com.cloudhacks.routewise`
+- API URL hardcoded in `mobile/src/constants/config.ts`
 
-1. `git clone https://github.com/adrianwongg1/uci-cloudhacks-2026.git routewise && cd routewise`
-2. Node 20+, Python 3.11, AWS CLI v2, `npm i -g expo-cli eas-cli`.
-3. `aws configure` with hackathon credentials in `us-east-1`.
-4. Aviationstack API key in hand (free tier at aviationstack.com).
-5. Expo account logged in (`eas login`).
-6. In Bedrock console (`us-east-1`): request & confirm access to **Claude Opus 4.7**. Copy the inference profile ID — this is the value of `BEDROCK_MODEL_ID`.
+### Key Architecture Decisions (locked in)
+- **SMS replaced with push notifications** — no SNS SMS, uses Expo Push API (`https://exp.host/--/api/v2/push/send`)
+- **Bedrock model:** `us.anthropic.claude-opus-4-6-v1` (inference profile, not raw model ID)
+- **Aviationstack fallback:** Lambda A falls back to Bedrock-only prediction if Aviationstack is blocked (free tier blocks AWS IPs). Provide `origin`/`destination` in the request body for best results.
+- **DynamoDB push_token storage:** `push_token` is stored in the `phone` partition key field — don't rename the DynamoDB column, just pass `push_token` as the value
 
-## Phase 1 — AWS infrastructure (manual console, ~30 min)
+---
 
-Create resources in this order so Lambda env vars have their ARNs ready.
+## TODO for Next Developer
 
-1. **DynamoDB** → table `RouteWiseSubscriptions`, partition key `phone` (String), sort key `flight_iata` (String), on-demand billing.
-2. **SNS** → topic `RouteWiseTopic`. Copy ARN → `SNS_TOPIC_ARN`. Enable SMS (default region `us-east-1`; set SMS type to "Transactional" in SNS text-messaging preferences; request spending limit increase if sandbox-limited).
-3. **IAM role** `RouteWiseLambdaRole` with managed policies: `AWSLambdaBasicExecutionRole`, `AmazonDynamoDBFullAccess`, `AmazonSNSFullAccess`, `AmazonBedrockFullAccess`. (Hackathon-grade scoping — tighten later.)
-4. **Lambdas** (Python 3.11, role = `RouteWiseLambdaRole`, timeout 30 s, memory 512 MB):
-   - `RouteWise-Predict` (Lambda A)
-   - `RouteWise-Subscribe` (Lambda B)
-   - `RouteWise-Poll` (Lambda C)
+### 1. Deploy web app
+The web build is at `mobile/dist/`. Deploy to any static host:
 
-   Set env vars per spec §"Environment Variables" (with updated `BEDROCK_MODEL_ID`).
-5. **API Gateway** HTTP API `RouteWiseAPI`:
-   - `POST /predict` → `RouteWise-Predict`
-   - `POST /subscribe` → `RouteWise-Subscribe`
-   - Enable CORS `*`. Copy invoke URL → mobile `src/constants/config.ts`.
-6. **EventBridge** rule `RouteWisePoll` → `cron(0/15 * * * ? *)` → target `RouteWise-Poll`.
-
-## Phase 2 — Backend Lambdas (fill in empty handlers)
-
-All three live under [backend/](backend/) with empty `handler.py` + `requirements.txt`.
-
-### [backend/lambdaA/handler.py](backend/lambdaA/handler.py) — `/predict`
-- Parse `event["body"]` JSON. Branch on presence of `flight_iata` vs `origin`+`destination`+`departure_time`.
-- Call Aviationstack via `urllib.request` (stdlib; avoid `requests` to keep zip small).
-- Derive features: `dep_hour` from scheduled_departure, `day_of_week`, `month`, `distance`. Simplest: let Bedrock estimate distance from the airport codes in the prompt — no airport table needed.
-- Call Bedrock via `boto3.client("bedrock-runtime").invoke_model(...)` with `anthropic_version: "bedrock-2023-05-31"`. System + user prompt verbatim from spec §"Bedrock Prompt Structure".
-- Parse JSON response, compute `risk_level` from thresholds (LOW ≤0.40, MEDIUM 0.41–0.65, HIGH ≥0.66).
-- Return the exact output shape from spec §"Lambda A".
-- `requirements.txt`: empty (boto3 is in the Lambda runtime).
-
-### [backend/lambdaB/handler.py](backend/lambdaB/handler.py) — `/subscribe`
-- Validate phone is E.164.
-- `boto3.resource("dynamodb").Table(...).put_item(...)` with all fields from spec §"DynamoDB Schema". Set `last_predicted_risk = predicted_risk`, `last_delay_minutes = None`, `status = "active"`, `created_at = datetime.utcnow().isoformat()+"Z"`.
-- **Recommend `sns.publish(PhoneNumber=phone, Message=...)` direct-publish** instead of topic subscription — SMS topic subscription is fiddly in sandbox mode.
-- Send the "Subscription confirmed" SMS template from spec §"SMS Templates".
-- Return `{"subscribed": true}`.
-- `requirements.txt`: empty.
-
-### [backend/lambdaC/handler.py](backend/lambdaC/handler.py) — Polling
-- Scan `RouteWiseSubscriptions` where `status = "active"` (filter expression).
-- For each subscription, compute `days_until_flight` and current UTC hour.
-- Gate with the exact decision table in spec §"Polling Schedule (Lambda C)".
-- **Days 1–14:** reuse Bedrock call from Lambda A. If `abs(new - last_predicted_risk) > 0.05` → send pre-flight SMS, update `last_predicted_risk`.
-- **Day 0:** call Aviationstack live status. If `delay_minutes` changed → send matching SMS (starts / increases / decreases / cleared). On `landed`/`arrived` → send landed SMS and set `status = "completed"`.
-- Past-date: set `status = "completed"`, skip.
-- `requirements.txt`: empty.
-
-### Deploy each Lambda (CLI)
 ```bash
-cd backend/lambdaA && zip -r function.zip . && \
-  aws lambda update-function-code --function-name RouteWise-Predict --zip-file fileb://function.zip
+# Vercel (recommended)
+cd mobile && npx vercel --prod dist/
+
+# or Netlify
+netlify deploy --prod --dir dist/
 ```
-Repeat for B (`RouteWise-Subscribe`) and C (`RouteWise-Poll`). If dependencies get added later, `pip install -t .` into the folder before zipping.
 
-## Phase 3 — Mobile app (Expo React Native)
+### 2. Upload APNs key to EAS (for production push notifications)
+```bash
+cd mobile
+npx eas-cli credentials
+# Select iOS → Push Notifications → Add new APNs Key
+# Key path: /path/to/AuthKey_ZD245WLS9Y.p8
+# Key ID: ZD245WLS9Y
+# Team ID: 7H5489C69N
+```
 
-The spec lists the exact files under [mobile/src/](mobile/src/). They're empty — fill them:
+### 3. Build production iOS app (optional, for TestFlight)
+```bash
+cd mobile
+eas build -p ios --profile production
+eas submit -p ios
+```
 
-1. **Do not run `create-expo-app`** — it would conflict with the committed layout. Instead, paste a minimal `package.json` with `expo`, `react`, `react-native`, `@react-navigation/native`, `@react-navigation/stack`, `react-native-screens`, `react-native-safe-area-context`, `@react-native-community/datetimepicker`, `expo-status-bar`. Matching `app.json` and `tsconfig.json` (extends `expo/tsconfig.base`).
-2. [mobile/src/constants/config.ts](mobile/src/constants/config.ts) — export `API_BASE_URL` = API Gateway invoke URL from Phase 1.
-3. [mobile/src/types/index.ts](mobile/src/types/index.ts) — TS interfaces mirroring Lambda A output and Lambda B input shapes.
-4. [mobile/src/api/predict.ts](mobile/src/api/predict.ts) / [subscribe.ts](mobile/src/api/subscribe.ts) — `fetch` wrappers returning typed responses.
-5. Components:
-   - [RiskBadge.tsx](mobile/src/components/RiskBadge.tsx) — colored pill keyed off `risk_level` (green/yellow/red).
-   - [FlightCard.tsx](mobile/src/components/FlightCard.tsx) — flight number, airline, route, scheduled dep.
-   - [ExplanationCard.tsx](mobile/src/components/ExplanationCard.tsx) — Bedrock `explanation` string.
-6. Screens:
-   - [SearchScreen.tsx](mobile/src/screens/SearchScreen.tsx) — segmented control (Flight # vs Route), form fields, "Check Delay Risk" button → `predict` → navigate to Result.
-   - [ResultScreen.tsx](mobile/src/screens/ResultScreen.tsx) — FlightCard + RiskBadge + ExplanationCard + live status + phone input + Subscribe button + post-subscribe confirmation state.
-7. [App.tsx](mobile/App.tsx) — `NavigationContainer` + stack navigator (Search → Result).
+### 4. Redeploy Lambdas after any code changes
+```bash
+cd backend/lambdaA && zip -q function.zip handler.py
+aws lambda update-function-code --function-name RouteWise-Predict --zip-file fileb://function.zip
 
-## Phase 4 — End-to-end verification
+cd ../lambdaB && zip -q function.zip handler.py
+aws lambda update-function-code --function-name RouteWise-Subscribe --zip-file fileb://function.zip
 
-1. **Backend sanity (before touching the phone):**
-   ```bash
-   curl -X POST <api>/predict -H "Content-Type: application/json" \
-     -d '{"flight_iata":"AA101","flight_date":"2026-04-20"}'
-   curl -X POST <api>/subscribe -H "Content-Type: application/json" \
-     -d '{"phone":"+1...","flight_iata":"AA101", ...}'
-   ```
-   Expect full response shape, SMS within ~10 s, and a row in DynamoDB. Check CloudWatch on failure.
-2. **Polling Lambda:** Lambda console → "Test" with `{}` event. Verify branch logic in CloudWatch. Force a row with `flight_date = today` to exercise the Aviationstack path.
-3. **Mobile:** `cd mobile && npx expo start`, scan QR with Expo Go on iPhone. Run the full Demo Script from spec §"Demo Script (Hackathon Day)".
-4. **Edge cases:** unknown flight number, route with no flight at that departure time, Aviationstack rate limit (free tier = 100/mo), Bedrock throttling.
+cd ../lambdaC && zip -q function.zip handler.py
+aws lambda update-function-code --function-name RouteWise-Monitor --zip-file fileb://function.zip
+```
 
-## Phase 5 — Demo-day polish (only if time)
+---
 
-- Loading + error states on both screens.
-- Disable Subscribe button until phone passes E.164 regex.
-- "Test with AA101" demo shortcut button on SearchScreen.
-- TestFlight (`eas build -p ios` → `eas submit -p ios`) — kick off during demo; builds take ~20 min.
+## Environment Variables (already set on each Lambda)
 
-## Critical files to modify
+### RouteWise-Predict (Lambda A)
+| Variable | Value |
+|---|---|
+| `AVIATIONSTACK_KEY` | `971c696ae0aa79579cc62ace149cf536` |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-6-v1` |
+| `BEDROCK_REGION` | `us-east-1` |
 
-- `backend/lambdaA/handler.py`, `backend/lambdaB/handler.py`, `backend/lambdaC/handler.py` (+ `requirements.txt`, likely stays empty)
-- `mobile/package.json`, `mobile/app.json`, `mobile/tsconfig.json`, `mobile/App.tsx`
-- `mobile/src/constants/config.ts`, `mobile/src/types/index.ts`
-- `mobile/src/api/predict.ts`, `mobile/src/api/subscribe.ts`
-- `mobile/src/components/{RiskBadge,FlightCard,ExplanationCard}.tsx`
-- `mobile/src/screens/{Search,Result}Screen.tsx`
+### RouteWise-Subscribe (Lambda B)
+| Variable | Value |
+|---|---|
+| `DYNAMODB_TABLE` | `RouteWiseSubscriptions` |
 
-No files outside the committed scaffold need to be created.
+### RouteWise-Monitor (Lambda C)
+| Variable | Value |
+|---|---|
+| `AVIATIONSTACK_KEY` | `971c696ae0aa79579cc62ace149cf536` |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-6-v1` |
+| `DYNAMODB_TABLE` | `RouteWiseSubscriptions` |
 
-## Risks / watch-outs
+> Note: `SNS_TOPIC_ARN` env var is no longer used — push notifications replaced SNS SMS.
 
-- **SNS SMS sandbox:** new AWS accounts can only SMS verified numbers. Verify your demo phone in the SNS console before the demo.
-- **Aviationstack free tier:** 100 req/mo. Budget calls; stub responses if you burn the quota.
-- **Bedrock access:** Opus 4.7 access-request approval can take minutes — do this first on the new laptop.
-- **DynamoDB Scan in Lambda C:** fine for demo scale; would need a GSI at prod volume.
-- **EventBridge every 15 min:** it will fire during the demo (good — shows it's live) but consumes Aviationstack quota.
+---
+
+## Running Locally
+
+### Mobile (Expo Go on iPhone)
+```bash
+cd mobile
+npm install
+npx expo start
+# Scan QR with Expo Go app
+```
+
+### Web
+```bash
+cd mobile
+npx expo start --web
+# Opens at http://localhost:8081
+```
+
+### Test backend with curl
+```bash
+API=https://0wzwzcppz8.execute-api.us-east-1.amazonaws.com
+
+# Test predict
+curl -X POST $API/predict \
+  -H "Content-Type: application/json" \
+  -d '{"flight_iata":"AA101","flight_date":"2026-04-20","origin":"JFK","destination":"LAX"}'
+
+# Test subscribe (use a real Expo push token from the app)
+curl -X POST $API/subscribe \
+  -H "Content-Type: application/json" \
+  -d '{"push_token":"ExponentPushToken[xxx]","flight_iata":"AA101","flight_date":"2026-04-20","origin":"JFK","destination":"LAX","scheduled_departure":"08:00","predicted_risk":0.45}'
+```
+
+---
+
+## Risks / Watch-outs
+
+- **Aviationstack free tier (100 req/mo):** Lambda A falls back to Bedrock-only if blocked. Include `origin`/`destination` in predict requests for best fallback accuracy.
+- **Bedrock throttling:** `us.anthropic.claude-opus-4-6-v1` is the correct inference profile ID — not the raw model ID.
+- **Expo push token:** only real physical devices running Expo Go (or a production build) produce valid push tokens. Simulators return null.
+- **DynamoDB Scan in Lambda C:** fine for demo scale; add a GSI on `status` for production.
+- **EventBridge every 15 min:** fires during demo — shows live monitoring. Consumes Aviationstack quota on day-of-flight subscriptions.

@@ -3,12 +3,17 @@
 ## What It Does
 A flight delay predictor app. User enters a flight number or route + date.
 App predicts delay probability using Amazon Bedrock, then watches the flight
-in real time and sends SMS alerts every time the delay status changes until
+in real time and sends **push notifications** every time the delay status changes until
 the plane lands.
 
+> **Note:** SMS (SNS) was replaced with Expo Push Notifications. See Lambda B/C for details.
+
 ## Frontend
-- Expo React Native app (demo on iPhone via Expo Go tomorrow)
-- TestFlight distribution after hackathon via EAS build/submit
+- Expo React Native app — runs on iOS (Expo Go) and web (`npx expo start --web`)
+- EAS project: `477bd70b-0fef-49f6-b3c7-4b2c65183e90` (account: `goatedraider77`)
+- Bundle ID: `com.cloudhacks.routewise`
+- APNs key: `AuthKey_ZD245WLS9Y.p8`, Key ID `ZD245WLS9Y`, Team ID `7H5489C69N`
+- Web build output: `mobile/dist/` (deploy to Vercel/Netlify)
 - 2 screens:
 
 ### Screen 1 — Search
@@ -23,8 +28,9 @@ Displays:
 - Delay probability % with risk level badge (LOW/MEDIUM/HIGH, color coded green/yellow/red)
 - Bedrock explanation card (why this flight is high/low risk)
 - Current live status from Aviationstack
-- Phone number input + Subscribe button
+- Subscribe button (uses Expo Push Token — no phone input needed)
 - Post-subscription confirmation state
+- On web: shows "Download the app" prompt instead of subscribe button
 
 ## Backend — AWS Services
 
@@ -46,44 +52,46 @@ Output:
 }
 
 ### Lambda B — /subscribe (POST)
-Input: { phone, flight_iata, flight_date, origin, destination, scheduled_departure, predicted_risk }
-Steps:
-1. Save subscription to DynamoDB
-2. Subscribe phone number to SNS topic
-3. Send confirmation SMS immediately
+Input: { push_token, flight_iata, flight_date, origin, destination, scheduled_departure, predicted_risk }
 
-Confirmation SMS:
-"RouteWise: Watching [flight] on [date]. [origin]→[dest] [time].
-Predicted delay risk: [X]% [LEVEL]. You'll be alerted if this flight is delayed."
+> ⚠️ Field is named `push_token` in the request body, but stored in the DynamoDB `phone` partition key field. Do NOT rename the DynamoDB column.
+
+Steps:
+1. Save subscription to DynamoDB (push_token stored as `phone` key)
+2. Send confirmation push notification via Expo Push API
+
+Expo Push API endpoint: `https://exp.host/--/api/v2/push/send`
+Payload: `{ "to": push_token, "title": "...", "body": "...", "sound": "default" }`
+
+No SNS required. No phone number required.
 
 ### Lambda C — Polling (triggered by EventBridge every 15 min)
 Logic per subscription based on days_until_flight:
 - > 14 days: no alerts
-- 7-14 days: once/day at 9am — Bedrock re-prediction, SMS if risk changed >5%
+- 7-14 days: once/day at 9am — Bedrock re-prediction, push if risk changed >5%
 - 3-6 days: once/day at 9am — same
 - 1-2 days: 3x/day at 8am, 2pm, 8pm — same
 - Day of (0 days): every 15 min — Aviationstack live status,
-  SMS if delay_minutes changed, auto-unsubscribe on landing
+  push if delay_minutes changed, auto-unsubscribe on landing
 - Past flight: mark status=completed, stop processing
 
-SMS Templates:
-- Subscription confirmed: "RouteWise: Watching [flight] on [date]. [origin]→[dest] [time]. Predicted delay risk: [X]% [LEVEL]. You'll be alerted if this flight is delayed."
-- Delay starts: "RouteWise: [flight] is now delayed. New departure: [time] (+[X] min). [origin]→[dest]."
-- Delay increases: "RouteWise: [flight] delay updated — now +[X] min. New departure: [time]."
-- Delay decreases: "RouteWise: [flight] delay reduced — now +[X] min. New departure: [time]."
-- Delay cleared: "RouteWise: [flight] delay cleared. Back on schedule — departs [time]."
-- Flight landed: "RouteWise: [flight] has landed at [dest]. Final delay: +[X] min. Safe travels! ✈️"
-- Pre-flight update (7-14 days): "RouteWise: [X] days until [flight] ([date]). [origin]→[dest] [time]. Current risk: [X]% [LEVEL]. We'll keep watching."
-- Pre-flight update (1-2 days): "RouteWise: [X] days until [flight]. [origin]→[dest] [time]. Delay risk updated: [X]% [LEVEL]."
+Push Notification Templates (title / body):
+- Confirmed: title="Watching [flight] ✈️" body="[origin]→[dest] on [date] at [time]. Risk: [X]% ([LEVEL])."
+- Delay starts: title="[flight] is delayed" body="New departure: [time] (+[X] min). [origin]→[dest]."
+- Delay increases: title="[flight] delay increased" body="Now +[X] min. New departure: [time]."
+- Delay decreases: title="[flight] delay reduced" body="Now +[X] min. New departure: [time]."
+- Delay cleared: title="[flight] delay cleared ✅" body="Back on schedule — departs [time]."
+- Landed: title="[flight] has landed ✈️" body="Arrived at [dest]. Final delay: +[X] min. Safe travels!"
+- Pre-flight update: title="[flight] delay risk update" body="[origin]→[dest] on [date]. Risk now [X]% [LEVEL]."
 
 ## DynamoDB Schema
 Table name: RouteWiseSubscriptions
-Partition key: phone (String)
-Sort key: flight_iata (String)
+Partition key: `phone` (String) — **stores the Expo push token, not a phone number**
+Sort key: `flight_iata` (String)
 
 Fields:
 {
-  "phone": "+13105551234",
+  "phone": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]",
   "flight_iata": "AA101",
   "flight_date": "2026-04-20",
   "origin": "LAX",
