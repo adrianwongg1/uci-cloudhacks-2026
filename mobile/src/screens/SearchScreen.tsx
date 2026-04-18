@@ -2,7 +2,6 @@ import { StackScreenProps } from '@react-navigation/stack';
 import { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -34,15 +33,17 @@ export default function SearchScreen({ navigation }: Props) {
   const [destination, setDestination] = useState('');
   const [departureTime, setDepartureTime] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function onCheck() {
+    setError(null);
     const date = flightDate.trim();
     if (!DATE_RE.test(date)) {
-      Alert.alert('Invalid date', 'Use YYYY-MM-DD, e.g. 2026-04-20');
+      setError('Invalid date — use YYYY-MM-DD, e.g. 2026-04-20');
       return;
     }
     if (mode === 'route' && !TIME_RE.test(departureTime.trim())) {
-      Alert.alert('Invalid time', 'Use HH:MM, e.g. 09:15');
+      setError('Invalid time — use HH:MM, e.g. 09:15');
       return;
     }
 
@@ -61,7 +62,7 @@ export default function SearchScreen({ navigation }: Props) {
       const prediction = await predict(payload);
       navigation.navigate('Result', { prediction, flightDate: date });
     } catch (e: unknown) {
-      Alert.alert('Could not check delay risk', e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -152,6 +153,12 @@ export default function SearchScreen({ navigation }: Props) {
           </>
         )}
 
+        {error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
         <Pressable
           style={[styles.button, disabled && styles.buttonDisabled]}
           onPress={onCheck}
@@ -222,4 +229,6 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { backgroundColor: '#94a3b8' },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  errorBox: { backgroundColor: '#fee2e2', borderRadius: 10, padding: 12, marginBottom: 10 },
+  errorText: { color: '#b91c1c', fontSize: 14 },
 });
