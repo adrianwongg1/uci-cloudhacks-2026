@@ -19,29 +19,47 @@ import { predict } from '../api/predict';
 type Props = StackScreenProps<RootStackParamList, 'Search'>;
 type Mode = 'flight' | 'route';
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}$/;
+
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function SearchScreen({ navigation }: Props) {
   const [mode, setMode] = useState<Mode>('flight');
   const [flightIata, setFlightIata] = useState('');
-  const [flightDate, setFlightDate] = useState('');
+  const [flightDate, setFlightDate] = useState(todayISO());
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [departureTime, setDepartureTime] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function onCheck() {
+    const date = flightDate.trim();
+    if (!DATE_RE.test(date)) {
+      Alert.alert('Invalid date', 'Use YYYY-MM-DD, e.g. 2026-04-20');
+      return;
+    }
+    if (mode === 'route' && !TIME_RE.test(departureTime.trim())) {
+      Alert.alert('Invalid time', 'Use HH:MM, e.g. 09:15');
+      return;
+    }
+
+    const payload =
+      mode === 'flight'
+        ? { flight_iata: flightIata.trim().toUpperCase(), flight_date: date }
+        : {
+            origin: origin.trim().toUpperCase(),
+            destination: destination.trim().toUpperCase(),
+            flight_date: date,
+            departure_time: departureTime.trim(),
+          };
+
     try {
       setLoading(true);
-      const payload =
-        mode === 'flight'
-          ? { flight_iata: flightIata.trim().toUpperCase(), flight_date: flightDate.trim() }
-          : {
-              origin: origin.trim().toUpperCase(),
-              destination: destination.trim().toUpperCase(),
-              flight_date: flightDate.trim(),
-              departure_time: departureTime.trim(),
-            };
       const prediction = await predict(payload);
-      navigation.navigate('Result', { prediction });
+      navigation.navigate('Result', { prediction, flightDate: date });
     } catch (e: unknown) {
       Alert.alert('Could not check delay risk', e instanceof Error ? e.message : String(e));
     } finally {
@@ -68,22 +86,8 @@ export default function SearchScreen({ navigation }: Props) {
         </Text>
 
         <View style={styles.segmented}>
-          <Pressable
-            style={[styles.segment, mode === 'flight' && styles.segmentActive]}
-            onPress={() => setMode('flight')}
-          >
-            <Text style={[styles.segmentText, mode === 'flight' && styles.segmentTextActive]}>
-              Flight #
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.segment, mode === 'route' && styles.segmentActive]}
-            onPress={() => setMode('route')}
-          >
-            <Text style={[styles.segmentText, mode === 'route' && styles.segmentTextActive]}>
-              Route
-            </Text>
-          </Pressable>
+          <Segment label="Flight #" active={mode === 'flight'} onPress={() => setMode('flight')} />
+          <Segment label="Route" active={mode === 'route'} onPress={() => setMode('route')} />
         </View>
 
         {mode === 'flight' ? (
@@ -161,6 +165,14 @@ export default function SearchScreen({ navigation }: Props) {
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+function Segment({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={[styles.segment, active && styles.segmentActive]} onPress={onPress}>
+      <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
+    </Pressable>
   );
 }
 
