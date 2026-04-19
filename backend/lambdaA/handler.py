@@ -33,33 +33,31 @@ CORS_HEADERS = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a flight delay prediction system with deep knowledge of worldwide airline "
-    "routes, schedules, and historical delay patterns, including both domestic US and "
-    "international flights. When a flight number is provided and origin/destination are "
-    "unknown, use your training knowledge to infer the exact route for that specific "
-    "flight number — for example AA101 is London Heathrow (LHR) to New York JFK, not a "
-    "domestic US route. Always use the real-world route for the given flight number. "
-    "Always return only a valid JSON object with no additional text, preamble, or markdown."
+    "You are a flight delay prediction system with knowledge of worldwide airline routes, "
+    "schedules, and historical delay patterns. "
+    "When inferring a flight's route or departure time from its flight number, only return "
+    "values you are highly confident about from your training data. If you are uncertain "
+    "about the exact route or departure time for a specific flight number, return null for "
+    "those fields rather than guessing — a null is better than wrong data. "
+    "Always return only a valid JSON object with no additional text or markdown."
 )
 
 USER_PROMPT = """Predict the delay probability for this flight:
 - Flight: {flight_iata}
 - Airline: {airline}
-- Route: {origin} -> {destination} (if both are "???", infer the typical route from the flight number)
+- Route: {origin} -> {destination} (if both are "???", infer from the flight number only if you are highly confident of the real-world route)
 - Date: {day_of_week}, {month}
-- Scheduled departure: {scheduled} (if "unknown", infer the typical departure time for this flight number)
+- Scheduled departure: {scheduled} (if "unknown", provide the real published departure time only if you are highly confident — otherwise return null)
 - Distance: {distance} miles
-
-Use your knowledge of this specific flight's typical route and schedule.
 
 Return JSON only - no markdown, no extra text:
 {{
   "delay_probability": 0.0 to 1.0,
   "risk_level": "LOW" or "MEDIUM" or "HIGH",
-  "explanation": "one sentence explaining the main delay risk factor, mentioning the specific route if known",
-  "typical_departure_time": "HH:MM in 24h format based on the flight's known schedule, or null if unknown",
-  "inferred_origin": "IATA code of the departure airport inferred from the flight number, or null if already known",
-  "inferred_destination": "IATA code of the arrival airport inferred from the flight number, or null if already known"
+  "explanation": "one sentence explaining the main delay risk factor, mentioning the route if known",
+  "scheduled_departure_time": "HH:MM in local departure airport time if you are highly confident of the real published schedule, otherwise null",
+  "inferred_origin": "IATA code of departure airport if it was ??? and you are highly confident, otherwise null",
+  "inferred_destination": "IATA code of arrival airport if it was ??? and you are highly confident, otherwise null"
 }}"""
 
 JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -80,7 +78,7 @@ def risk_level(p):
 def call_bedrock(features):
     body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 400,
+        "max_tokens": 600,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": USER_PROMPT.format(**features)}],
     }
@@ -149,7 +147,7 @@ def handler(event, _context):
         "airline": feat["airline"],
         "origin": resolved_origin,
         "destination": resolved_dest,
-        "scheduled_departure": pred.get("typical_departure_time"),
+        "scheduled_departure": pred.get("scheduled_departure_time") or pred.get("typical_departure_time"),
         "current_status": None,
         "current_delay_minutes": None,
         "predicted_probability": prob,
