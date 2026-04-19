@@ -24,3 +24,6 @@ venv/
 
 # Local Claude Code settings
 .claude/
+
+PLAN.md
+SPEC.md
