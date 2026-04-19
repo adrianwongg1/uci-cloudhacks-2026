@@ -1,4 +1,9 @@
 export async function postJSON<T>(url: string, body: unknown): Promise<T> {
+  if (!url.startsWith('http')) {
+    throw new Error(
+      'Missing or invalid API URL. Set EXPO_PUBLIC_API_BASE_URL in mobile/.env (see mobile/.env.example).'
+    );
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

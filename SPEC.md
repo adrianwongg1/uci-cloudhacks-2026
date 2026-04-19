@@ -10,9 +10,9 @@ the plane lands.
 
 ## Frontend
 - Expo React Native app — runs on iOS (Expo Go) and web (`npx expo start --web`)
-- EAS project: `477bd70b-0fef-49f6-b3c7-4b2c65183e90` (account: `goatedraider77`)
+- EAS project ID in `mobile/app.json` under `extra.eas.projectId`
 - Bundle ID: `com.cloudhacks.routewise`
-- APNs key: `AuthKey_ZD245WLS9Y.p8`, Key ID `ZD245WLS9Y`, Team ID `7H5489C69N`
+- APNs: configure your own key via `eas credentials` (Apple Developer portal)
 - Web build output: `mobile/dist/` (deploy to Vercel/Netlify)
 - 2 screens:
 

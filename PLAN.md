@@ -10,13 +10,13 @@
 
 ## What's Already Done
 
-### AWS Infrastructure (live in us-east-1, account 701783520524)
+### AWS Infrastructure (live in your AWS account, e.g. us-east-1)
 - **DynamoDB** table `RouteWiseSubscriptions` — partition key `phone` (String), sort key `flight_iata` (String), on-demand billing
 - **IAM role** `RouteWiseLambdaRole` — policies: `AWSLambdaBasicExecutionRole`, `AmazonDynamoDBFullAccess`, `AmazonSNSFullAccess`, `AmazonBedrockFullAccess`
 - **Lambda A** `RouteWise-Predict` — deployed, handler `handler.handler`, Python 3.11, 512 MB, 30s timeout
 - **Lambda B** `RouteWise-Subscribe` — deployed, same config
 - **Lambda C** `RouteWise-Monitor` — deployed, same config
-- **API Gateway** HTTP API `RouteWiseAPI` — invoke URL: `https://0wzwzcppz8.execute-api.us-east-1.amazonaws.com`
+- **API Gateway** HTTP API `RouteWiseAPI` — invoke URL: set `EXPO_PUBLIC_API_BASE_URL` in `mobile/.env` (see `mobile/.env.example`)
   - `POST /predict` → `RouteWise-Predict`
   - `POST /subscribe` → `RouteWise-Subscribe`
   - CORS: `*`
@@ -24,11 +24,11 @@
 
 ### Mobile App (Expo React Native + Web)
 - Full stack navigation: Search → Result screens
-- Push notifications via Expo Push API (APNs token-based, key ID `ZD245WLS9Y`, team `7H5489C69N`)
+- Push notifications via Expo Push API (APNs token-based; configure your own key in EAS credentials)
 - Web export works (`npx expo export --platform web` → `dist/`)
-- EAS project linked: `477bd70b-0fef-49f6-b3c7-4b2c65183e90` (account: `goatedraider77`)
+- EAS project linked in `mobile/app.json` (`extra.eas.projectId`)
 - Bundle ID: `com.cloudhacks.routewise`
-- API URL hardcoded in `mobile/src/constants/config.ts`
+- API base URL from `EXPO_PUBLIC_API_BASE_URL` (see `mobile/.env.example`)
 
 ### Key Architecture Decisions (locked in)
 - **SMS replaced with push notifications** — no SNS SMS, uses Expo Push API (`https://exp.host/--/api/v2/push/send`)
@@ -56,9 +56,7 @@ netlify deploy --prod --dir dist/
 cd mobile
 npx eas-cli credentials
 # Select iOS → Push Notifications → Add new APNs Key
-# Key path: /path/to/AuthKey_ZD245WLS9Y.p8
-# Key ID: ZD245WLS9Y
-# Team ID: 7H5489C69N
+# Use your Apple Developer APNs key (.p8), Key ID, and Team ID from the Apple Developer portal
 ```
 
 ### 3. Build production iOS app (optional, for TestFlight)
@@ -87,7 +85,7 @@ aws lambda update-function-code --function-name RouteWise-Monitor --zip-file fil
 ### RouteWise-Predict (Lambda A)
 | Variable | Value |
 |---|---|
-| `AVIATIONSTACK_KEY` | `971c696ae0aa79579cc62ace149cf536` |
+| `AVIATIONSTACK_KEY` | *(your Aviationstack API key — never commit real values)* |
 | `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-6-v1` |
 | `BEDROCK_REGION` | `us-east-1` |
 
@@ -99,7 +97,7 @@ aws lambda update-function-code --function-name RouteWise-Monitor --zip-file fil
 ### RouteWise-Monitor (Lambda C)
 | Variable | Value |
 |---|---|
-| `AVIATIONSTACK_KEY` | `971c696ae0aa79579cc62ace149cf536` |
+| `AVIATIONSTACK_KEY` | *(your Aviationstack API key — never commit real values)* |
 | `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-6-v1` |
 | `DYNAMODB_TABLE` | `RouteWiseSubscriptions` |
 
@@ -126,7 +124,7 @@ npx expo start --web
 
 ### Test backend with curl
 ```bash
-API=https://0wzwzcppz8.execute-api.us-east-1.amazonaws.com
+API=https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com
 
 # Test predict
 curl -X POST $API/predict \
