@@ -34,6 +34,7 @@ export interface SubscribeRequest {
   flight_date: string;
   origin: string;
   destination: string;
+  airline: string;
   scheduled_departure: string;
   predicted_risk: number;
 }

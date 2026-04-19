@@ -74,16 +74,20 @@ def handler(event, _context):
         return reply(400, {"error": f"missing fields: {missing}"})
 
     push_token = body["push_token"]
+    flight_iata = body["flight_iata"]
+    flight_date = body["flight_date"]
     risk = float(body["predicted_risk"])
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     item = {
-        "phone": push_token,          # reuse partition key field
-        "flight_iata": body["flight_iata"],
-        "flight_date": body["flight_date"],
+        "phone": push_token,
+        "flight_data": f"{flight_iata}#{flight_date}",
+        "flight_iata": flight_iata,
+        "flight_date": flight_date,
         "origin": body["origin"],
         "destination": body["destination"],
         "scheduled_departure": body["scheduled_departure"],
+        "airline": body.get("airline", "Unknown"),
         "predicted_risk": Decimal(str(risk)),
         "last_predicted_risk": Decimal(str(risk)),
         "last_delay_minutes": None,

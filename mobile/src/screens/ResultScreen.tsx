@@ -20,9 +20,10 @@ import RiskBadge from '../components/RiskBadge';
 
 type Props = StackScreenProps<RootStackParamList, 'Result'>;
 
-function extractTime(iso: string | null): string {
-  if (!iso) return '00:00';
-  const m = /T(\d{2}:\d{2})/.exec(iso);
+function extractTime(value: string | null): string {
+  if (!value) return '00:00';
+  // Handle ISO strings like "2026-04-19T08:00:00Z" or plain "HH:MM"
+  const m = /T(\d{2}:\d{2})/.exec(value) ?? /^(\d{1,2}:\d{2})/.exec(value);
   return m ? m[1] : '00:00';
 }
 
@@ -48,6 +49,7 @@ export default function ResultScreen({ route }: Props) {
         flight_date: flightDate,
         origin: prediction.origin,
         destination: prediction.destination,
+        airline: prediction.airline,
         scheduled_departure: extractTime(prediction.scheduled_departure),
         predicted_risk: prediction.predicted_probability,
       });

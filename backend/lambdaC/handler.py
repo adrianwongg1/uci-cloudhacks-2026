@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -9,7 +8,6 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Attr
 
-AVIATIONSTACK_KEY = os.environ["AVIATIONSTACK_KEY"]
 BEDROCK_MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 DYNAMODB_TABLE = os.environ["DYNAMODB_TABLE"]
@@ -75,10 +73,10 @@ def send_push(push_token, title, body):
         return json.loads(r.read())
 
 
-def update_sub(push_token, flight_iata, fields):
+def update_sub(push_token, flight_data, fields):
     expr = "SET " + ", ".join(f"#{k} = :{k}" for k in fields)
     table.update_item(
-        Key={"phone": push_token, "flight_iata": flight_iata},
+        Key={"phone": push_token, "flight_data": flight_data},
         UpdateExpression=expr,
         ExpressionAttributeNames={f"#{k}": k for k in fields},
         ExpressionAttributeValues={f":{k}": v for k, v in fields.items()},
@@ -111,19 +109,6 @@ def call_bedrock(sub):
     return json.loads(text)
 
 
-def aviationstack_status(flight_iata, flight_date):
-    qs = urllib.parse.urlencode({
-        "access_key": AVIATIONSTACK_KEY,
-        "flight_iata": flight_iata,
-        "flight_date": flight_date,
-    })
-    with urllib.request.urlopen(
-        f"http://api.aviationstack.com/v1/flights?{qs}", timeout=15
-    ) as r:
-        flights = json.loads(r.read()).get("data") or []
-    return flights[0] if flights else None
-
-
 def handle_preflight(sub, days_until):
     push_token = sub["phone"]
     flight = sub["flight_iata"]
@@ -151,90 +136,21 @@ def handle_preflight(sub, days_until):
             body=(
                 f"{origin}→{dest} on {sub['flight_date']} at {sched}. "
                 f"Risk now {pct}% {label}."
-                + (f" {days_until} days to go." if days_until > 1 else "")
+                + (f" {days_until} days to go." if days_until > 1 else " Your flight is today!")
             ),
         )
     except Exception as e:
         print(f"push failed: {e}")
         return
 
-    update_sub(push_token, flight, {"last_predicted_risk": Decimal(str(new_prob))})
-
-
-def extract_dep_time(flight, fallback):
-    dep = flight.get("departure") or {}
-    dt = parse_iso(dep.get("estimated") or dep.get("scheduled"))
-    return dt.strftime("%H:%M") if dt else fallback
-
-
-def handle_day_of(sub):
-    push_token = sub["phone"]
-    flight_id = sub["flight_iata"]
-
-    try:
-        flight = aviationstack_status(flight_id, sub["flight_date"])
-    except Exception as e:
-        print(f"aviationstack error {flight_id}: {e}")
-        return
-    if not flight:
-        return
-
-    status = (flight.get("flight_status") or "").lower()
-    dep = flight.get("departure") or {}
-    delay_raw = dep.get("delay")
-    delay = int(delay_raw) if isinstance(delay_raw, (int, float)) else 0
-    new_time = extract_dep_time(flight, sub["scheduled_departure"])
-
-    dest, origin = sub["destination"], sub["origin"]
-    last = sub.get("last_delay_minutes")
-    last_delay = int(last) if last is not None else None
-
-    if status in ("landed", "arrived"):
-        try:
-            send_push(
-                push_token,
-                title=f"{flight_id} has landed ✈️",
-                body=f"Arrived at {dest}. Final delay: +{delay} min. Safe travels!",
-            )
-        except Exception as e:
-            print(f"push failed: {e}")
-        update_sub(push_token, flight_id, {
-            "status": "completed",
-            "last_delay_minutes": delay,
-        })
-        return
-
-    if last_delay == delay:
-        return
-
-    prev = last_delay or 0
-    if prev == 0 and delay > 0:
-        title = f"{flight_id} is delayed"
-        body = f"New departure: {new_time} (+{delay} min). {origin}→{dest}."
-    elif delay == 0 and prev > 0:
-        title = f"{flight_id} delay cleared ✅"
-        body = f"Back on schedule — departs {new_time}."
-    elif delay > prev:
-        title = f"{flight_id} delay increased"
-        body = f"Now +{delay} min. New departure: {new_time}."
-    else:
-        title = f"{flight_id} delay reduced"
-        body = f"Now +{delay} min. New departure: {new_time}."
-
-    try:
-        send_push(push_token, title=title, body=body)
-    except Exception as e:
-        print(f"push failed: {e}")
-        return
-
-    update_sub(push_token, flight_id, {"last_delay_minutes": delay})
+    update_sub(push_token, f"{flight}#{sub['flight_date']}", {"last_predicted_risk": Decimal(str(new_prob))})
 
 
 def should_run(days_until, hour, minute):
     if days_until > 14 or days_until < 0:
         return False
     if days_until == 0:
-        return True
+        return hour == 8 and minute < 15
     if 3 <= days_until <= 14:
         return hour == 9 and minute < 15
     if 1 <= days_until <= 2:
@@ -253,16 +169,13 @@ def process(sub, now):
     days_until = (fd - now.date()).days
 
     if days_until < 0:
-        update_sub(push_token, flight_iata, {"status": "completed"})
+        update_sub(push_token, f"{flight_iata}#{sub['flight_date']}", {"status": "completed"})
         return
 
     if not should_run(days_until, now.hour, now.minute):
         return
 
-    if days_until == 0:
-        handle_day_of(sub)
-    else:
-        handle_preflight(sub, days_until)
+    handle_preflight(sub, days_until)
 
 
 def scan_active():
