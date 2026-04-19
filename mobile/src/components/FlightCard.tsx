@@ -32,9 +32,15 @@ export default function FlightCard({
         <Text style={styles.airline}>{airline}</Text>
       </View>
       <View style={styles.routeRow}>
-        <Text style={styles.airport}>{origin}</Text>
-        <Text style={styles.arrow}>→</Text>
-        <Text style={styles.airport}>{destination}</Text>
+        {origin && origin !== '???' && destination && destination !== '???' ? (
+          <>
+            <Text style={styles.airport}>{origin}</Text>
+            <Text style={styles.arrow}>→</Text>
+            <Text style={styles.airport}>{destination}</Text>
+          </>
+        ) : (
+          <Text style={styles.unknownRoute}>Route inferred by AI — see explanation below</Text>
+        )}
       </View>
       <View style={styles.metaRow}>
         <Text style={styles.meta}>Scheduled {formatTime(scheduledDeparture)}</Text>
@@ -72,4 +78,5 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', gap: 12, marginTop: 12, flexWrap: 'wrap' },
   meta: { fontSize: 13, color: '#475569' },
   delay: { color: '#b91c1c', fontWeight: '700' },
+  unknownRoute: { fontSize: 13, color: '#94a3b8', fontStyle: 'italic', marginTop: 4 },
 });

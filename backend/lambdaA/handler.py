@@ -13,6 +13,21 @@ BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 
 bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
 
+AIRLINE_CODES = {
+    "AA": "American Airlines", "UA": "United Airlines", "DL": "Delta Air Lines",
+    "WN": "Southwest Airlines", "B6": "JetBlue Airways", "AS": "Alaska Airlines",
+    "NK": "Spirit Airlines", "F9": "Frontier Airlines", "G4": "Allegiant Air",
+    "SY": "Sun Country Airlines", "HA": "Hawaiian Airlines", "VX": "Virgin America",
+    "MQ": "Envoy Air", "OO": "SkyWest Airlines", "YX": "Republic Airways",
+    "9E": "Endeavor Air", "YV": "Mesa Airlines", "OH": "PSA Airlines",
+}
+
+def airline_from_iata(flight_iata: str) -> str:
+    code = re.match(r"^([A-Z]{2})", flight_iata or "")
+    if code:
+        return AIRLINE_CODES.get(code.group(1), f"{code.group(1)} Airlines")
+    return "Unknown"
+
 CORS_HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
@@ -21,22 +36,28 @@ CORS_HEADERS = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a flight delay prediction system. You have deep knowledge of US "
-    "domestic flight delay patterns based on historical data. Always return "
-    "only a valid JSON object with no additional text, preamble, or markdown."
+    "You are a flight delay prediction system with deep knowledge of US domestic "
+    "flight routes, schedules, and historical delay patterns. "
+    "When a flight number is provided and origin/destination are unknown, use your "
+    "training knowledge of common US airline routes to infer the typical route for "
+    "that flight number. Always return only a valid JSON object with no additional "
+    "text, preamble, or markdown."
 )
 
 USER_PROMPT = """Predict the delay probability for this flight:
-- Route: {origin} -> {destination}
+- Flight: {flight_iata}
 - Airline: {airline}
+- Route: {origin} -> {destination} (if both are "???", infer the typical route from the flight number)
 - Scheduled departure: {dep_hour:02d}:00 on {day_of_week}, {month}
-- Estimated distance: {distance} miles
+- Distance: {distance} miles
+
+Use your knowledge of this specific flight's typical route and schedule if live data is unavailable.
 
 Return JSON only - no markdown, no extra text:
 {{
   "delay_probability": 0.0 to 1.0,
   "risk_level": "LOW" or "MEDIUM" or "HIGH",
-  "explanation": "one sentence explaining the main delay risk factor"
+  "explanation": "one sentence explaining the main delay risk factor, mentioning the specific route if known"
 }}"""
 
 JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -80,14 +101,15 @@ def pick_by_departure(flights, hhmm):
     return flights[0] if flights else None
 
 
-def features_from_flight(flight):
+def features_from_flight(flight, flight_iata=""):
     dep = flight.get("departure") or {}
     arr = flight.get("arrival") or {}
     dt = parse_iso(dep.get("scheduled")) or datetime.now(timezone.utc)
     return {
+        "flight_iata": (flight.get("flight") or {}).get("iata") or flight_iata,
         "airline": (flight.get("airline") or {}).get("name") or "Unknown",
-        "origin": dep.get("iata") or "",
-        "destination": arr.get("iata") or "",
+        "origin": dep.get("iata") or "???",
+        "destination": arr.get("iata") or "???",
         "dep_hour": dt.hour,
         "day_of_week": dt.strftime("%A"),
         "month": dt.strftime("%B"),
@@ -127,6 +149,33 @@ def handler(event, _context):
     destination = body.get("destination")
     departure_time = body.get("departure_time")
 
+    # Accept pre-fetched features from mobile (bypasses Aviationstack IP block on free plan)
+    prefetched = body.get("prefetched_features")
+    if prefetched:
+        print(f"[predict] using prefetched_features from mobile: airline={prefetched.get('airline')} "
+              f"origin={prefetched.get('origin')} dest={prefetched.get('destination')} "
+              f"dep_hour={prefetched.get('dep_hour')} status={prefetched.get('current_status')}")
+        feat = {**prefetched, "flight_iata": flight_iata or prefetched.get("flight_iata", "")}
+        try:
+            pred = call_bedrock(feat)
+        except Exception as e:
+            return reply(502, {"error": f"Bedrock error: {e}"})
+        prob = float(pred.get("delay_probability", 0))
+        return reply(200, {
+            "flight_iata": body.get("flight_iata"),
+            "flight_date": flight_date,
+            "airline": feat.get("airline", "Unknown"),
+            "origin": feat.get("origin", "???"),
+            "destination": feat.get("destination", "???"),
+            "scheduled_departure": feat.get("scheduled_departure"),
+            "current_status": feat.get("current_status"),
+            "current_delay_minutes": feat.get("current_delay_minutes"),
+            "predicted_probability": prob,
+            "risk_level": pred.get("risk_level") or risk_level(prob),
+            "explanation": pred.get("explanation", ""),
+        })
+
+    print("[predict] no prefetched_features — calling Aviationstack from Lambda (may be blocked on free plan)")
     flight = None
     try:
         if flight_iata:
@@ -138,19 +187,18 @@ def handler(event, _context):
             )
             flight = pick_by_departure(flights, departure_time)
         else:
-            return reply(400, {"error": "provide flight_iata or origin+destination+departure_time"})
-    except Exception:
-        pass  # Fall back to request-provided data
+            return reply(400, {"error": "provide flight_iata or origin+destination"})
+    except Exception as e:
+        print(f"[predict] Aviationstack call failed: {e} — falling back to request fields only")
 
     # Build features from live data if available, otherwise use request fields
     if flight:
-        feat = features_from_flight(flight)
+        feat = features_from_flight(flight, flight_iata)
     else:
         try:
             dt = datetime.fromisoformat(flight_date)
         except ValueError:
             dt = datetime.now(timezone.utc)
-        # Parse departure_time like "14:30" if provided
         if departure_time:
             try:
                 h, m = departure_time.split(":")
@@ -158,8 +206,9 @@ def handler(event, _context):
             except Exception:
                 pass
         feat = {
-            "airline": "Unknown",
-            "origin": origin or (flight_iata[:3] if flight_iata else "???"),
+            "flight_iata": flight_iata or "",
+            "airline": airline_from_iata(flight_iata),
+            "origin": origin or "???",
             "destination": destination or "???",
             "dep_hour": dt.hour,
             "day_of_week": dt.strftime("%A"),
@@ -170,7 +219,7 @@ def handler(event, _context):
     try:
         pred = call_bedrock(feat)
     except Exception as e:
-        return reply(502, {"error": f"bedrock error: {e}"})
+        return reply(502, {"error": f"Bedrock error: {e}"})
 
     prob = float(pred.get("delay_probability", 0))
     dep = (flight.get("departure") or {}) if flight else {}

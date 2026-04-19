@@ -8,7 +8,16 @@
       "Bash(/usr/local/bin/aws --version)",
       "Bash(/opt/homebrew/bin/aws --version)",
       "Bash(python3 -c ':*)",
-      "Bash(pip3 install:*)"
+      "Bash(pip3 install:*)",
+      "mcp__AWS_API_MCP_Server__call_aws",
+      "Bash(cp /Users/ivanmartinez/Desktop/CloudHacks/backend/lambdaA/handler.py /tmp/aws-api-mcp/workdir/handler.py)",
+      "Read(//private/tmp/aws-api-mcp/workdir/**)",
+      "Bash(zip -j lambda_predict.zip handler.py)",
+      "Bash(npx expo *)",
+      "mcp__xcode__screenshot",
+      "mcp__xcode__list_sims",
+      "mcp__xcode__session_set_defaults",
+      "Bash(npm install *)"
     ]
   }
 }

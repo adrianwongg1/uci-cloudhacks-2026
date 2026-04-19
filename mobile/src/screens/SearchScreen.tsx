@@ -83,7 +83,7 @@ export default function SearchScreen({ navigation }: Props) {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Predict your delay risk</Text>
         <Text style={styles.subtitle}>
-          We check live flight data and run it through Claude to estimate your risk.
+          Enter your flight details and Claude AI will predict your delay risk.
         </Text>
 
         <View style={styles.segmented}>
